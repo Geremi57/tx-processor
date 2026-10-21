@@ -4,3 +4,7 @@ sample_transactions.json
 # Local binaries and CPU profiles
 tx-cli
 *.pprof
+/tx-processor
+/tx-cli
+/benchmark-results/
+/profiles/
