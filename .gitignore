@@ -1,3 +1,6 @@
 .idea/
 .DS_Store
 sample_transactions.json
+# Local binaries and CPU profiles
+tx-cli
+*.pprof

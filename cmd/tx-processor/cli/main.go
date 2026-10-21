@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/pprof"
 	"sync"
 	"time"
 
@@ -48,6 +49,16 @@ func main() {
 
 func processFile(filePath string, workerCount, batchSize int) error {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	profileFile, err := os.Create("cpu.pprof")
+	if err != nil {
+		return fmt.Errorf("create CPU profile: %w", err)
+	}
+	defer profileFile.Close()
+
+	if err := pprof.StartCPUProfile(profileFile); err != nil {
+		return fmt.Errorf("start CPU profile: %w", err)
+	}
+	defer pprof.StopCPUProfile()
 	logger.Info("starting transaction processor",
 		"file", filePath, "workers", workerCount, "batch_size", batchSize)
 
