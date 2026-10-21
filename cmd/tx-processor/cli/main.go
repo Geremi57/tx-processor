@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"runtime/pprof"
 	"sync"
 	"time"
@@ -35,30 +37,61 @@ func main() {
 	filePath := flag.String("file", "", "Path to the NDJSON file (required)")
 	workerCount := flag.Int("workers", defaultWorkers, "Number of concurrent workers")
 	batchSize := flag.Int("batch", defaultBatchSize, "Batch size per worker flush")
+	cpuProfile := flag.String("cpuprofile", "", "Write CPU profile to this file")
+	memProfile := flag.String("memprofile", "", "Write heap profile to this file")
 	flag.Parse()
+
+	if *workerCount < 1 {
+		log.Fatal("-workers must be at least 1")
+	}
+	if *batchSize < 1 {
+		log.Fatal("-batch must be at least 1")
+	}
 
 	if *filePath == "" {
 		fmt.Println("Usage: cli -file=sample_transactions.json [-workers=10] [-batch=500]")
 		os.Exit(1)
 	}
 
-	if err := processFile(*filePath, *workerCount, *batchSize); err != nil {
+	if err := processFile(*filePath, *workerCount, *batchSize, *cpuProfile, *memProfile); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func processFile(filePath string, workerCount, batchSize int) error {
+func processFile(filePath string, workerCount, batchSize int, cpuProfilePath, memProfilePath string) error {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	profileFile, err := os.Create("cpu.pprof")
-	if err != nil {
-		return fmt.Errorf("create CPU profile: %w", err)
-	}
-	defer profileFile.Close()
 
-	if err := pprof.StartCPUProfile(profileFile); err != nil {
-		return fmt.Errorf("start CPU profile: %w", err)
+	var cpuProfileFile *os.File
+	cpuProfileActive := false
+
+	if cpuProfilePath != "" {
+		if err := os.MkdirAll(filepath.Dir(cpuProfilePath), 0755); err != nil {
+			return fmt.Errorf("create CPU profile directory: %w", err)
+		}
+
+		profileFile, err := os.Create(cpuProfilePath)
+		if err != nil {
+			return fmt.Errorf("create CPU profile: %w", err)
+		}
+
+		if err := pprof.StartCPUProfile(profileFile); err != nil {
+			profileFile.Close()
+			return fmt.Errorf("start CPU profile: %w", err)
+		}
+
+		cpuProfileFile = profileFile
+		cpuProfileActive = true
+
+		defer func() {
+			if cpuProfileActive {
+				pprof.StopCPUProfile()
+			}
+			if err := cpuProfileFile.Close(); err != nil {
+				logger.Error("close CPU profile", "error", err)
+			}
+		}()
 	}
-	defer pprof.StopCPUProfile()
+
 	logger.Info("starting transaction processor",
 		"file", filePath, "workers", workerCount, "batch_size", batchSize)
 
@@ -160,6 +193,35 @@ FeedLoop:
 		"elapsed_sec", fmt.Sprintf("%.3f", elapsed),
 		"throughput_tps", fmt.Sprintf("%.0f", float64(totalLines)/elapsed),
 		"unique_users", len(snapshot))
+
+	if cpuProfileActive {
+		pprof.StopCPUProfile()
+		cpuProfileActive = false
+	}
+
+	if memProfilePath != "" {
+		if err := os.MkdirAll(filepath.Dir(memProfilePath), 0755); err != nil {
+			return fmt.Errorf("create memory profile directory: %w", err)
+		}
+
+		runtime.GC()
+
+		profileFile, err := os.Create(memProfilePath)
+		if err != nil {
+			return fmt.Errorf("create memory profile: %w", err)
+		}
+
+		if err := pprof.WriteHeapProfile(profileFile); err != nil {
+			profileFile.Close()
+			return fmt.Errorf("write memory profile: %w", err)
+		}
+
+		if err := profileFile.Close(); err != nil {
+			return fmt.Errorf("close memory profile: %w", err)
+		}
+
+		logger.Info("memory profile written", "file", memProfilePath)
+	}
 
 	return scanner.Err()
 }
